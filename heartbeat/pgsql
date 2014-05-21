@@ -53,6 +53,7 @@ OCF_RESKEY_check_wal_receiver_default="false"
 # Defaults for replication
 OCF_RESKEY_rep_mode_default=none
 OCF_RESKEY_node_list_default=""
+OCF_RESKEY_cascade_default=false
 OCF_RESKEY_restore_command_default=""
 OCF_RESKEY_archive_cleanup_command_default=""
 OCF_RESKEY_recovery_end_command_default=""
@@ -85,6 +86,7 @@ OCF_RESKEY_stop_escalate_in_slave_default=30
 # for replication
 : ${OCF_RESKEY_rep_mode=${OCF_RESKEY_rep_mode_default}}
 : ${OCF_RESKEY_node_list=${OCF_RESKEY_node_list_default}}
+: ${OCF_RESKEY_cascade=${OCF_RESKEY_cascade_default}}
 : ${OCF_RESKEY_restore_command=${OCF_RESKEY_restore_command_default}}
 : ${OCF_RESKEY_archive_cleanup_command=${OCF_RESKEY_archive_cleanup_command_default}}
 : ${OCF_RESKEY_recovery_end_command=${OCF_RESKEY_recovery_end_command_default}}
@@ -290,6 +292,17 @@ This is required for replication.
 </longdesc>
 <shortdesc lang="en">node list</shortdesc>
 <content type="string" default="${OCF_RESKEY_node_list_default}" />
+</parameter>
+
+<parameter name="cascade" unique="0" required="0">
+<longdesc lang="en">
+If you want to use replication between 3 or more nodes,
+set this parameter to "true".
+This parameter requires to set rep_mode to "sync" or "async"
+and PostgreSQL 9.3 or latater.
+</longdesc>
+<shortdesc lang="en">cascade</shortdesc>
+<content type="boolean" default="${OCF_RESKEY_cascade_default}" />
 </parameter>
 
 <parameter name="restore_command" unique="0" required="0">
@@ -1222,6 +1235,11 @@ is_replication() {
         return 0
     fi
     return 1
+}
+
+is_cascade() {
+    ocf_is_true $OCF_RESKEY_cascade
+    return $?
 }
 
 get_my_location() {
