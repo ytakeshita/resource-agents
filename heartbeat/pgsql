@@ -337,6 +337,14 @@ This is used for replication and is optional.
 Master's floating IP address to be connected from hot standby.
 This parameter is used for "primary_conninfo" in recovery.conf.
 This is required for replication.
+
+If cascade is true, the description for master_ip changes.
+Specify the all sets of the node name and the floating IP address of its parent
+separeted with a space.
+The delimiter of the node name and the IP address is ":"
+
+example for cascade replication:
+node1:node1's_parent_ip node2:node2's_parent_ip node3:node3's_parent_ip
 </longdesc>
 <shortdesc lang="en">master ip</shortdesc>
 <content type="string" default="${OCF_RESKEY_master_ip_default}" />
@@ -1365,6 +1373,18 @@ user_recovery_conf() {
     fi
 }
 
+get_my_parent_ip() {
+    local count
+    locat target
+
+    for target in `echo $OCF_RESKEY_master_ip`; do
+         if echo $target | grep -q "$NODENAME:"; then
+             echo $target | cut -d ":" -f 2-
+             return 0
+         fi
+    done
+}
+
 make_recovery_conf() {
     runasowner "touch $RECOVERY_CONF"
     if [ $? -ne 0 ]; then
@@ -1372,15 +1392,26 @@ make_recovery_conf() {
         return 1
     fi
 
+    if is_cascade; then
+        my_parent_ip=`get_my_parent_ip`
+        ocf_log info "My parent IP is $my_parent_ip."
+        if [ ! -n $my_parent_ip ]; then
+            ocf_log err "Can't get my parent IP"
+            return 1
+        fi
+    else
+        my_parent_ip=$OCF_RESKEY_master_ip
+    fi
+
 cat > $RECOVERY_CONF <<END
 standby_mode = 'on'
-primary_conninfo = 'host=${OCF_RESKEY_master_ip} port=${OCF_RESKEY_pgport} user=${OCF_RESKEY_repuser} application_name=${NODENAME} ${OCF_RESKEY_primary_conninfo_opt}'
+primary_conninfo = 'host=${my_parent_ip} port=${OCF_RESKEY_pgport} user=${OCF_RESKEY_repuser} application_name=${NODENAME} ${OCF_RESKEY_primary_conninfo_opt}'
 restore_command = '${OCF_RESKEY_restore_command}'
 recovery_target_timeline = 'latest'
 END
 
     user_recovery_conf >> $RECOVERY_CONF
-    ocf_log debug "Created recovery.conf. host=${OCF_RESKEY_master_ip}, user=${OCF_RESKEY_repuser}"
+    ocf_log debug "Created recovery.conf. host=${my_parent_ip}, user=${OCF_RESKEY_repuser}"
     return 0
 }
 
