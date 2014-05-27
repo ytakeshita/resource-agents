@@ -1864,6 +1864,25 @@ pgsql_validate_all() {
         fi
     fi
 
+    if is_cascade; then
+        if ! is_replication; then
+            ocf_log err "cascade have to set the paramater rep_mode to \"sync\" or \"async\"."
+            return $OCF_ERR_CONFIGURED
+        fi
+
+        number_of_ip=`echo $OCF_RESKEY_master_ip | wc -w`
+        number_of_node=`echo $NODE_LIST | wc -w`
+        if [ $number_of_node -ne $number_of_ip ]; then
+            ocf_log_err "The number of node_list must be equal to the number of master_ip in cascade mode"
+            return $OCF_ERR_CONFIGURED
+        fi
+
+        if [ `printf "$version\n9.3" | sort -n | head -1` != "9.3" ]; then
+            ocf_log err "Cascade mode needs PostgreSQL 9.3 or higher."
+            return $OCF_ERR_INSTALLED
+        fi
+    fi
+
     return $OCF_SUCCESS
 }
 
