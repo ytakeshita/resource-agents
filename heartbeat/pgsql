@@ -608,6 +608,9 @@ pgsql_replication_start() {
         return $OCF_ERR_GENERIC
     fi
     change_pgsql_status "$NODENAME" "HS:alone"
+    if is_cascade; then
+        change_pgsql_children $NODENAME "" || return $OCF_ERR_GENERIC
+    fi
     return $OCF_SUCCESS
 }
 
@@ -793,6 +796,9 @@ pgsql_replication_stop() {
     then
         ocf_log info "PostgreSQL is already stopped."
         change_pgsql_status "$NODENAME" "STOP"
+        if is_cascade; then
+            change_pgsql_children $NODENAME "" || return $OCF_ERR_GENERIC
+        fi
         return $OCF_SUCCESS
     fi
 
@@ -804,6 +810,9 @@ pgsql_replication_stop() {
     fi
 
     change_pgsql_status "$NODENAME" "STOP"
+        if is_cascade; then
+            change_pgsql_children $NODENAME "" || return $OCF_ERR_GENERIC
+        fi
     set_async_mode_all
     delete_master_baseline
     return $OCF_SUCCESS
@@ -952,6 +961,10 @@ pgsql_replication_monitor() {
         if [ "$output" = "DISCONNECT" ]; then
             change_pgsql_status "$NODENAME" "HS:alone"
         fi
+        if is_cascade; then
+            control_slave_status "slave" || return $OCF_ERR_GENERIC
+            true
+        fi
     fi
     return $rc
 }
@@ -1062,6 +1075,77 @@ pgsql_notify() {
     return $OCF_SUCCESS
 }
 
+# Is the target anyone's children ?
+# If the target doesn't have parent, Master node manage the node.
+# the target should be changed to DISCONNECT and CAN_NOT_PROMOTE by Master.
+is_orphan_node() {
+    local node
+    local output
+    local target
+
+    target=$1
+
+    for node in $NODE_LIST; do
+        # if the Pacemaker is shutdown unexpectedly, the attribute of $PGSQL_CHILDREN has been left.
+        if ! is_node_online $node ; then
+            ocf_log debug "$node is not online."
+            continue
+        else
+            output=`$CRM_ATTR_REBOOT -N "$node" -n "$PGSQL_CHILDREN" -G -q 2>/dev/null`
+            ocf_log debug "node = $node , output : $output"
+            echo $output | grep -w -q "$target"
+            if [ $? -eq 0 ]; then
+                ocf_log debug "$target is the $node's child"
+                return 1
+            fi
+        fi
+    done
+    ocf_log debug "$target doesn't have parent."
+    return 0
+}
+
+# Both Master and Slave node have to control its children connected to its directly.
+# In addition Master node should control the node unmanaged by anyone.
+get_target_node() {
+    local rc
+    local role
+    local node
+    local target
+    local tmp_target_list
+    local target_list
+
+    role=$1
+    if is_cascade; then
+        tmp_target_list=$2
+    else
+        tmp_target_list=$NODE_LIST
+    fi
+
+    # exclude itself
+    for node in $tmp_target_list; do
+        if [ "$node" = "$NODENAME" ]; then
+            continue
+        else
+            target_list="$target_list $node"
+        fi
+    done
+
+    if [ "$role" = "master" ] && is_cascade; then
+        for target in $NODE_LIST; do
+            if [ "$target" = "$NODENAME" ]; then
+                continue
+            else
+                is_orphan_node $target
+                rc=$?
+                if [ $rc -eq 0 ]; then
+                    target_list="$target_list $target"
+                fi
+            fi
+        done
+    fi
+    echo $target_list
+}
+
 control_slave_status() {
     local rc
     local data_status
@@ -1069,6 +1153,16 @@ control_slave_status() {
     local all_data_status
     local tmp_data_status
     local number_of_nodes
+    local target_list
+    local slave_list
+    local slave_list_tmp
+    local role
+
+    if [ "$1" = "slave" ]; then
+        role="slave"
+    else
+        role="master"
+    fi
 
     all_data_status=`su $OCF_RESKEY_pgdba -c "cd $OCF_RESKEY_pgdata; \
                      $OCF_RESKEY_psql $psql_options -U $OCF_RESKEY_pgdba \
@@ -1083,11 +1177,30 @@ control_slave_status() {
         return 1
     fi
 
-    number_of_nodes=`echo $NODE_LIST | wc -w`
-    for target in $NODE_LIST; do
-        if [ "$target" = "$NODENAME" ]; then
-            continue
+    # if PostgreSQL have the slave nodes which are unmanaged by Pacemaker, exclude its.
+    for target in $all_data_status; do
+        slave_list_tmp=`echo $target | cut -d "|" -f 1`
+        echo $NODE_LIST | grep -w -q "$slave_list_tmp"
+        if [ $? -eq 0 ]; then
+            slave_list="$slave_list_tmp $slave_list"
         fi
+    done
+    slave_list=`echo $slave_list | tr -s " "`
+    ocf_log debug "slave_list = '$slave_list'"
+
+    if is_cascade; then
+        change_pgsql_children $NODENAME "$slave_list"
+        # I am Slave and I don't have children.
+        if [ ! -n "$slave_list" -a "$role" = "slave" ]; then
+            return 0
+        fi
+    fi
+
+    target_list=`get_target_node $role "$slave_list"`
+    ocf_log debug "My target_list is $target_list"
+
+    number_of_slaves=`echo $slave_list | wc -w`
+    for target in $target_list; do
 
         data_status="DISCONNECT"
         if [ -n "$all_data_status" ]; then
@@ -1109,18 +1222,25 @@ control_slave_status() {
                 ;;
             "STREAMING|ASYNC")
                 change_data_status "$target" "$data_status"
-                if [ "$OCF_RESKEY_rep_mode" = "sync" ]; then
-                    change_master_score "$target" "$CAN_NOT_PROMOTE"
-                    set_sync_mode "$target"
+                if [ $number_of_slaves -ge 2 ]; then
+                   # I can't determine which slave's data is newest.
+                   change_master_score "$target" "$CAN_NOT_PROMOTE"
+                   change_pgsql_status "$target" "HS:async"
                 else
-                    if [ $number_of_nodes -le 2 ]; then
-                        change_master_score "$target" "$CAN_PROMOTE"
-                    else
-                        # I can't determine which slave's data is newest in async mode.
+                    if [ "$role" = "slave" ]; then
                         change_master_score "$target" "$CAN_NOT_PROMOTE"
+                        change_pgsql_status "$target" "HS:cascade"
+                    elif [ "$role" = "master" ]; then
+                        if [ "$OCF_RESKEY_rep_mode" = "sync" ]; then
+                            change_master_score "$target" "$CAN_NOT_PROMOTE"
+                            change_pgsql_status "$target" "HS:async"
+                            set_sync_mode "$target"
+                        else
+                            change_master_score "$target" "$CAN_PROMOTE"
+                            change_pgsql_status "$target" "HS:async"
+                        fi
                     fi
                 fi
-                change_pgsql_status "$target" "HS:async"
                 ;;
             "STREAMING|POTENTIAL")
                 change_data_status "$target" "$data_status"
@@ -1460,6 +1580,32 @@ change_data_status() {
             break
         fi
     done
+    return 0
+}
+
+change_pgsql_children() {
+    local output
+    local value
+
+    if ! is_node_online $1; then
+        return 0
+    fi
+
+    if [ ! -n "$2" ]; then
+        value="none"
+    else
+        value="$2"
+    fi
+
+    output=`$CRM_ATTR_REBOOT -N "$NODENAME" -n "$PGSQL_CHILDREN" -G -q 2>/dev/null`
+    if [ "$output" != "$value" ]; then
+        ocf_log info "Changing $PGSQL_CHILDREN on $1 : $output->$value."
+        $CRM_ATTR_REBOOT -N "$1" -n "$PGSQL_CHILDREN" -v "$value"
+        if [ $? -ne 0 ]; then
+            ocf_log err "Can't change $PGSQL_STATUS_ATTR."
+            return 1
+        fi
+    fi
     return 0
 }
 
@@ -1820,6 +1966,7 @@ if is_replication; then
     PGSQL_DATA_STATUS_ATTR="${RESOURCE_NAME}-data-status"
     PGSQL_XLOG_LOC_NAME="${RESOURCE_NAME}-xlog-loc"
     PGSQL_MASTER_BASELINE="${RESOURCE_NAME}-master-baseline"
+    PGSQL_CHILDREN="${RESOURCE_NAME}-children"
 
     NODE_LIST=`echo $OCF_RESKEY_node_list | tr '[A-Z]' '[a-z]'`
     RE_CONTROL_SLAVE="false"
