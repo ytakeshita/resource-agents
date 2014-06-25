@@ -904,12 +904,12 @@ pgsql_replication_monitor() {
     if [ $rc -eq $OCF_RUNNING_MASTER ]; then
         change_data_status "$NODENAME" "LATEST"
         change_pgsql_status "$NODENAME" "PRI"
-        control_slave_status || return $OCF_ERR_GENERIC
+        control_children_status || return $OCF_ERR_GENERIC
         if [ "$RE_CONTROL_SLAVE" = "true" ]; then
             sleep 2
             ocf_log info "re-controlling slave status."
             RE_CONTROL_SLAVE="none"
-            control_slave_status || return $OCF_ERR_GENERIC
+            control_children_status || return $OCF_ERR_GENERIC
         fi
         return $rc
     fi
@@ -1031,7 +1031,7 @@ pgsql_notify() {
                     MASTER_NODE=`echo $OCF_RESKEY_CRM_meta_notify_master_uname | \
                                   sed "s/ /\n/g" | head -1 | tr '[A-Z]' '[a-z]'`
                     if [ "$NODENAME" = "$MASTER_NODE" ]; then
-                        control_slave_status
+                        control_children_status
                     fi
                     return $OCF_SUCCESS
                     ;;
@@ -1041,13 +1041,38 @@ pgsql_notify() {
     return $OCF_SUCCESS
 }
 
-control_slave_status() {
+# If children_list includes myself, exclude me.
+get_target_node() {
+    local rc
+    local node
+    local target
+    local tmp_target_list
+    local target_list
+
+    tmp_target_list=$1
+
+    # exclude itself
+    for node in $tmp_target_list; do
+        if [ "$node" = "$NODENAME" ]; then
+            continue
+        else
+            target_list="$target_list $node"
+        fi
+    done
+
+    echo $target_list
+}
+
+control_children_status() {
     local rc
     local data_status
     local target
     local all_data_status
     local tmp_data_status
-    local number_of_nodes
+    local number_of_children
+    local target_list
+    local children_list
+    local children_list_tmp
 
     all_data_status=`su $OCF_RESKEY_pgdba -c "cd $OCF_RESKEY_pgdata; \
                      $OCF_RESKEY_psql $psql_options -U $OCF_RESKEY_pgdba \
@@ -1062,11 +1087,23 @@ control_slave_status() {
         return 1
     fi
 
-    number_of_nodes=`echo $NODE_LIST | wc -w`
-    for target in $NODE_LIST; do
-        if [ "$target" = "$NODENAME" ]; then
-            continue
+    # if PostgreSQL have the child nodes which are unmanaged by Pacemaker, exclude its.
+    for target in $all_data_status; do
+        children_list_tmp=`echo $target | cut -d "|" -f 1`
+        echo $NODE_LIST | grep -w -q "$children_list_tmp"
+        if [ $? -eq 0 ]; then
+            children_list="$children_list_tmp $children_list"
         fi
+    done
+    children_list=`echo $children_list | tr -s " "`
+    ocf_log debug "children_list = '$children_list'"
+
+    target_list=`get_target_node "$children_list"`
+    ocf_log debug "My target_list is $target_list"
+
+    number_of_children =`echo $children_list | wc -w`
+
+    for target in $target_list; do
 
         data_status="DISCONNECT"
         if [ -n "$all_data_status" ]; then
@@ -1088,18 +1125,25 @@ control_slave_status() {
                 ;;
             "STREAMING|ASYNC")
                 change_data_status "$target" "$data_status"
-                if [ "$OCF_RESKEY_rep_mode" = "sync" ]; then
-                    change_master_score "$target" "$CAN_NOT_PROMOTE"
-                    set_sync_mode "$target"
+                # When I have 2 or more children nodes
+                if [ $number_of_children -ge 2 ]; then
+                   # I can't determine which children's data is newest.
+                   change_master_score "$target" "$CAN_NOT_PROMOTE"
+                   change_pgsql_status "$target" "HS:async"
                 else
-                    if [ $number_of_nodes -le 2 ]; then
-                        change_master_score "$target" "$CAN_PROMOTE"
-                    else
-                        # I can't determine which slave's data is newest in async mode.
-                        change_master_score "$target" "$CAN_NOT_PROMOTE"
-                    fi
+                   # When I have only 1 child node
+                   if [ "$OCF_RESKEY_rep_mode" = "sync" ]; then
+                       # If rep_mode is "sync", the child's data_status should be "STREAMING|SYNC"
+                       change_master_score "$target" "$CAN_NOT_PROMOTE"
+                       change_pgsql_status "$target" "HS:async"
+                       set_sync_mode "$target"
+                   else
+                       # If rep_mode is "async", the child's data_status should be "STREAMING|ASYNC".
+                       # But when the Master node is dead, the child have to be promoted by master_score.
+                       change_master_score "$target" "$CAN_PROMOTE"
+                       change_pgsql_status "$target" "HS:async"
+                   fi
                 fi
-                change_pgsql_status "$target" "HS:async"
                 ;;
             "STREAMING|POTENTIAL")
                 change_data_status "$target" "$data_status"
