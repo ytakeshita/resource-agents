@@ -676,6 +676,23 @@ pgsql_promote() {
         ocf_log info "PostgreSQL is promoted."
     fi
 
+    if is_replication_slot; then
+        replication_slot_name_list=`create_replication_slot_name`
+        ocf_log debug "replication slot names are $replication_slot_name_list."
+
+        for replication_slot_name in $replication_slot_name_list
+        do
+            create_replication_slot $replication_slot_name
+            rc=$?
+            if [ $rc -eq 0 ]; then
+                ocf_log_info "PostgreSQL creates $replication_slot_name"
+            else
+                ocf_exit_reason "PostgreSQL can't create $replication_slot_name"
+                return $OCF_ERR_GENERIC
+            fi
+        done
+    fi
+
     change_data_status "$NODENAME" "LATEST"
     exec_with_retry 0 $CRM_MASTER -v $PROMOTE_ME
     change_pgsql_status "$NODENAME" "PRI"
@@ -1239,6 +1256,52 @@ is_replication() {
     return 1
 }
 
+is_replication_slot() {
+    if [ "$OCF_RESKEY_replication_slot" = "physical" ]; then
+        return 0
+    fi
+
+    return 1
+}
+
+# create replication_slot name from node_list.
+create_replication_slot_name() {
+    local target
+    local replication_slot_name
+    local replication_slot_name_list_tmp
+    local replication_slot_name_list
+
+    for target in $NODE_LIST
+    do
+        if [ "$target" != "$NODENAME" ]; then
+            replication_slot_name="$target"_slot
+            replication_slot_name_list_tmp="$replication_slot_name_list"
+            replication_slot_name_list="$replication_slot_name_list_tmp $replication_slot_name"
+        fi
+    done
+
+    echo $replication_slot_name_list
+}
+
+create_replication_slot() {
+    local replication_slot_name=$1
+    local output
+    # if $replication_slot_name is already exist, skip to create the slot.
+    local CREATE_REPLICATION_SLOT_sql="SELECT pg_create_physical_replication_slot('$replication_slot_name') \
+                        FROM (VALUES (1)) AS t \
+                        WHERE NOT EXISTS (SELECT * FROM pg_replication_slots WHERE slot_name = '$replication_slot_name');"
+
+    output=`su $OCF_RESKEY_pgdba -c "cd $OCF_RESKEY_pgdata; \
+                  $OCF_RESKEY_psql $psql_options -U $OCF_RESKEY_pgdba \
+                  -Atc \"$CREATE_REPLICATION_SLOT_sql\""`
+
+    if [ $? -eq 0 ]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
 get_my_location() {
     local rc
     local output
@@ -1359,6 +1422,9 @@ user_recovery_conf() {
     fi
     if [ -n "$OCF_RESKEY_recovery_end_command" ]; then
         echo "recovery_end_command = '${OCF_RESKEY_recovery_end_command}'"
+    fi
+    if is_replication_slot || [ "$OCF_RESKEY_rep_mode" = "slave" ] ; then
+        echo "primary_slot_name = '${NODENAME}_slot'"
     fi
 }
 
