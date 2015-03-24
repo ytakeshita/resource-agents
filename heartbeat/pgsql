@@ -1768,6 +1768,22 @@ pgsql_validate_all() {
         fi
     fi
 
+    if [ -n "$OCF_RESKEY_replication_slot" ]; then
+        echo "$OCF_RESKEY_replication_slot" | grep -q "^physical$"
+        if [ $? -ne 0 ]; then
+            ocf_exit_reason "replication_slot must be physical."
+            return $OCF_ERR_GENERIC
+        fi
+    fi
+
+    if is_replication_slot; then
+        ocf_version_cmp "$version" "9.4"
+        if [ $? -eq 0 -o $? -eq 3 ]; then
+            ocf_exit_reason "replication slot needs PostgreSQL 9.4 or higher."
+            return $OCF_ERR_GENERIC
+        fi
+    fi
+
     return $OCF_SUCCESS
 }
 
