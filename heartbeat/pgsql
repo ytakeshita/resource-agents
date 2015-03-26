@@ -1812,6 +1812,35 @@ pgsql_validate_all() {
         fi
     fi
 
+    if [ -n "$OCF_RESKEY_replication_slot" ]; then
+        echo "$OCF_RESKEY_replication_slot" | grep -q "^physical$"
+        if [ $? -ne 0 ]; then
+            ocf_exit_reason "replication_slot must be physical."
+            return $OCF_ERR_CONFIGUERD
+        fi
+    fi
+
+    if is_replication_slot; then
+        ocf_version_cmp "$version" "9.4"
+        if [ $? -eq 0 -o $? -eq 3 ]; then
+            ocf_exit_reason "Replication slot needs PostgreSQL 9.4 or higher."
+            return $OCF_ERR_CONFIGURED
+        fi
+    fi
+
+    if is_replication_slot && ! ocf_is_true ${OCF_RESKEY_multi_replication_slot}; then
+        echo "${OCF_RESKEY_replication_slot_name}" | grep -q "^[[:space:]]*$"
+        if [ $? -eq 0 ]; then
+            ocf_exit_reason "Replication slot needs the slot name."
+            return $OCF_ERR_CONFIGURED
+        fi
+    fi
+
+    if ocf_is_true ${OCF_RESKEY_multi_replication_slot} && [ -n "$OCF_RESKEY_replication_slot_name" ]; then
+        ocf_exit_reason "if multi_replication_slot is true, don't set replication_slot_name."
+        return $OCF_ERR_CONFIGURED
+    fi
+
     return $OCF_SUCCESS
 }
 
