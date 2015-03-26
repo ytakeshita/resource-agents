@@ -64,6 +64,9 @@ OCF_RESKEY_tmpdir_default="/var/lib/pgsql/tmp"
 OCF_RESKEY_xlog_check_count_default="3"
 OCF_RESKEY_crm_attr_timeout_default="5"
 OCF_RESKEY_stop_escalate_in_slave_default=30
+OCF_RESKEY_replication_slot_default=""
+OCF_RESKEY_replication_slot_name_default=""
+OCF_RESKEY_multi_replication_slot_default="false"
 
 : ${OCF_RESKEY_pgctl=${OCF_RESKEY_pgctl_default}}
 : ${OCF_RESKEY_psql=${OCF_RESKEY_psql_default}}
@@ -96,6 +99,9 @@ OCF_RESKEY_stop_escalate_in_slave_default=30
 : ${OCF_RESKEY_xlog_check_count=${OCF_RESKEY_xlog_check_count_default}}
 : ${OCF_RESKEY_crm_attr_timeout=${OCF_RESKEY_crm_attr_timeout_default}}
 : ${OCF_RESKEY_stop_escalate_in_slave=${OCF_RESKEY_stop_escalate_in_slave_default}}
+: ${OCF_RESKEY_replication_slot=${OCF_RESKEY_replication_slot_default}}
+: ${OCF_RESKEY_replication_slot_name=${OCF_RESKEY_replication_slot_name_default}}
+: ${OCF_RESKEY_multi_replication_slot=${OCF_RESKEY_multi_replication_slot_default}}
 
 usage() {
     cat <<EOF
@@ -359,6 +365,38 @@ This is optional for replication.
 </longdesc>
 <shortdesc lang="en">restart_on_promote</shortdesc>
 <content type="boolean" default="${OCF_RESKEY_restart_on_promote_default}" />
+</parameter>
+
+<parameter name="replication_slot" unique="0" required="0">
+<longdesc lang="en">
+If you want to use replication slot, set to "physical".
+When WAL files required for replication exceede "wal keep segments",
+Replication slot allows to hold the WAL files, and the slave node automatically connect to master node.
+This is optional for replication and require PostgreSQL 9.4 or later.
+</longdesc>
+<shortdesc lang="en">replication_slot</shortdesc>
+<content type="string" default="${OCF_RESKEY_replication_slot_default}" />
+</parameter>
+
+<parameter name="replication_slot_name" unique="0" required="0">
+<longdesc lang="en">
+Name of the replication slot.
+This is used when the replication slot is only one.
+This is optional for replication and replication slot.
+</longdesc>
+<shortdesc lang="en">replication_slot_name</shortdesc>
+<content type="string" default="${OCF_RESKEY_replication_slot_name_default}" />
+</parameter>
+
+<parameter name="multi_replication_slot" unique="0" required="0">
+<longdesc lang="en">
+If you use multi replication slots, set this to true.
+When this is true, the replication slot names are "node name"+"_slot" instead of replication_slot_name.
+For example if node names are node1 and node2, the replication slot's names are node1_slot and node2_slot.
+This is optional for replication and replication slot.
+</longdesc>
+<shortdesc lang="en">multi_replication_slot</shortdesc>
+<content type="boolean" default="${OCF_RESKEY_multi_replication_slot_default}" />
 </parameter>
 
 <parameter name="tmpdir" unique="0" required="0">
