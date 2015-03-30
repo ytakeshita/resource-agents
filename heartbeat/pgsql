@@ -1449,12 +1449,25 @@ reload_conf() {
 }
 
 user_recovery_conf() {
+    local number_of_nodes
+
     # put archive_cleanup_command and recovery_end_command only when defined by user
     if [ -n "$OCF_RESKEY_archive_cleanup_command" ]; then
         echo "archive_cleanup_command = '${OCF_RESKEY_archive_cleanup_command}'"
     fi
     if [ -n "$OCF_RESKEY_recovery_end_command" ]; then
         echo "recovery_end_command = '${OCF_RESKEY_recovery_end_command}'"
+    fi
+
+    number_of_nodes=`echo $NODE_LIST | wc -w`
+    if is_replication_slot; then
+        if [ $number_of_nodes -le 2 ]; then
+            echo "primary_slot_name = '${OCF_RESKEY_replication_slot_name}'"
+        elif [ $number_of_nodes -ge 3 ]; then
+            echo "primary_slot_name = '${OCF_RESKEY_replication_slot_name}_$NODENAME'"
+        else
+            echo "primary_slot_name = '${OCF_RESKEY_replication_slot_name}'"
+        fi
     fi
 }
 
