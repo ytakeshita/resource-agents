@@ -268,6 +268,17 @@ nfs_exec()
 	local cmd=$1
 	set_exec_mode
 
+        if ! ocf_is_probe ; then
+                if [ "$cmd" = "status" -a $EXEC_MODE -eq 2 ] || [ "$cmd" = "status" -a $EXEC_MODE -eq 3 ]; then
+                        pidof nfs nfsd nfsd4 nfsd4_callbacks
+                        return $?
+                fi
+        else
+	        case $EXEC_MODE in
+			 [23]) test $cmd = "status" && cmd="is-active" ;;
+		esac
+        fi
+
 	case $EXEC_MODE in 
 		1) ${OCF_RESKEY_nfs_init_script} $cmd;;
 		2) systemctl $cmd nfs-server.service ;;
