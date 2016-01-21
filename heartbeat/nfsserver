@@ -293,10 +293,43 @@ v3locking_exec()
 	fi
 }
 
+nfsserver_systemd_monitor ()
+{
+        local threads_num
+
+        # Before mounting nfsd to /proc/fs/nfsd, /proc/fs/nfsd/threads can't read.
+        # The mount is executed by proc-fs-nfsd.mount, and it is started with the dependency of nfs-server.service.
+        threads_num=`cat /proc/fs/nfsd/threads 2>/dev/null`
+
+        if [ $? -ne 0 ]; then
+                if ocf_is_probe; then
+                        nfs_exec is-active
+                else
+                        # /proc/fs/nfsd maybe unmounted unexpectly.
+                        return $OCF_ERR_GENERIC
+		fi
+        else
+                if [ $threads_num -gt 0 ]; then
+                        return 0
+                elif [ $threads_num -eq 0 ]; then
+			# before starting nfs-server.service, but /proc/fs/nfsd/threads may be mounted by someone.
+                        if ocf_is_probe; then
+                                return 3
+                        else
+                                return $OCF_ERR_GENERIC
+                        fi
+                fi
+        fi
+}
+
 nfsserver_monitor ()
 {
+	set_exec_mode
 	fn=`mktemp`
-	nfs_exec status > $fn 2>&1 
+	case $EXEC_MODE in
+                1) nfs_exec status > $fn 2>&1;;
+             [23]) nfsserver_systemd_monitor > $fn 2>&1;;
+	esac
 	rc=$?
 	ocf_log debug "$(cat $fn)"
 	rm -f $fn
