@@ -293,10 +293,34 @@ v3locking_exec()
 	fi
 }
 
+nfsserver_systemd_monitor ()
+{
+	local threads_num
+	local rc
+
+	threads_num=`cat /proc/fs/nfsd/threads 2>/dev/null`
+	rc=$?
+        if [ $rc -ne 0 ]; then
+		threads_num=-1
+	fi
+
+	# The nfsd file system isn't mounted on /proc/fs/nfsd,
+	# or There is no NFS threads.
+        if [ $rc -ne 0 ] || [ $threads_num -eq 0 ]; then
+		return 3
+        else
+		return 0
+        fi
+}
+
 nfsserver_monitor ()
 {
+	set_exec_mode
 	fn=`mktemp`
-	nfs_exec status > $fn 2>&1 
+        case $EXEC_MODE in
+                1) nfs_exec status > $fn 2>&1;;
+             [23]) nfsserver_systemd_monitor > $fn 2>&1;;
+        esac
 	rc=$?
 	ocf_log debug "$(cat $fn)"
 	rm -f $fn
