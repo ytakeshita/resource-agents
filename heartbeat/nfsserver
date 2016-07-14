@@ -598,9 +598,11 @@ nfsserver_start ()
 
 	fn=`mktemp`
 	nfs_exec start > $fn 2>&1
-	rc=$?
 	ocf_log debug "$(cat $fn)"
 	rm -f $fn
+
+	nfsserver_monitor
+	rc=$?
 
 	if [ $rc -ne 0 ]; then
 		ocf_exit_reason "Failed to start NFS server"
@@ -624,9 +626,15 @@ nfsserver_stop ()
 
 	fn=`mktemp`
 	nfs_exec stop > $fn 2>&1
-	rc=$?
 	ocf_log debug "$(cat $fn)"
 	rm -f $fn
+
+	nfsserver_monitor
+	if [ $? -eq $OCF_NOT_RUNNING ]; then
+		rc=$OCF_SUCCESS
+	else
+		rc=$OCF_ERR_GENERIC
+	fi
 
 	v3locking_exec "stop"
 	if [ $? -ne 0 ]; then
