@@ -1120,10 +1120,33 @@ pgsql_notify() {
     return $OCF_SUCCESS
 }
 
+# make synchronous_standby_name from the node name.
+# PG9.5 or older: use the node name as synchrnous_standby_names.
+# PG9.6 or newer: convert node name to SQL identifier for valid synchronous_standby_names.
+make_synchronous_standby_name() {
+    local name
+    local rc
+
+    ocf_version_cmp "$version" "9.6"
+    rc=$?
+    if [ $rc -eq 0 ]; then
+        name="$1"
+    elif [ $rc -eq 1 -o $rc -eq 2 ]; then
+        name=$(echo "$1" | sed 's/\(^[0-9]\)/_\1/' | tr .- __)
+    else
+        ocf_exit_reason "Failed version check"
+        return $OCF_ERR_GENERIC
+    fi
+
+    ocf_log debug "synchrnous_standby_names and aplication_name are $name"
+    echo "$name"
+}
+
 control_slave_status() {
     local rc
     local data_status
     local target
+    local tmp_target
     local all_data_status
     local tmp_data_status
     local number_of_nodes
@@ -1149,7 +1172,11 @@ control_slave_status() {
         data_status="DISCONNECT"
         if [ -n "$all_data_status" ]; then
             for tmp_data_status in $all_data_status; do
-                if ! echo $tmp_data_status | grep -q "^${target}|"; then
+                tmp_target=$(make_synchronous_standby_name "${target}")
+                if [ $? -eq $OCF_ERR_GENERIC ]; then
+                    return $OCF_ERR_GENERIC
+                fi
+                if ! echo "$tmp_data_status" | grep -q "^${tmp_target}|"; then
                     continue
                 fi
                 data_status=`echo $tmp_data_status | cut -d "|" -f 2,3`
@@ -1487,13 +1514,18 @@ set_async_mode() {
 
 set_sync_mode() {
     local sync_node_in_conf
+    local synchronous_standby_name
 
     sync_node_in_conf=`cat $REP_MODE_CONF | cut -d "'" -f 2`
     if [ -n "$sync_node_in_conf" ]; then
         ocf_log debug "$sync_node_in_conf is already sync mode."
     else
         ocf_log info "Setup $1 into sync mode."
-        runasowner -q err "echo \"synchronous_standby_names = '$1'\" > \"$REP_MODE_CONF\""
+        synchronous_standby_name=$(make_synchronous_standby_name "$1")
+        if [ $? -eq $OCF_ERR_GENERIC ]; then
+            return $OCF_ERR_GENERIC
+        fi
+        runasowner -q err "echo \"synchronous_standby_names = '$synchronous_standby_name'\" > \"$REP_MODE_CONF\""
         [ "$RE_CONTROL_SLAVE" = "false" ] && RE_CONTROL_SLAVE="true"
         exec_with_retry 0 reload_conf
     fi
@@ -1536,15 +1568,22 @@ user_recovery_conf() {
 }
 
 make_recovery_conf() {
+    local application_name
+
     runasowner "touch $RECOVERY_CONF"
     if [ $? -ne 0 ]; then
         ocf_exit_reason "Can't create recovery.conf."
         return 1
     fi
 
+    application_name=$(make_synchronous_standby_name "${NODENAME}")
+    if [ $? -eq $OCF_ERR_GENERIC ]; then
+        return $OCF_ERR_GENERIC
+    fi
+
 cat > $RECOVERY_CONF <<END
 standby_mode = 'on'
-primary_conninfo = 'host=${OCF_RESKEY_master_ip} port=${OCF_RESKEY_pgport} user=${OCF_RESKEY_repuser} application_name=${NODENAME} ${OCF_RESKEY_primary_conninfo_opt}'
+primary_conninfo = 'host=${OCF_RESKEY_master_ip} port=${OCF_RESKEY_pgport} user=${OCF_RESKEY_repuser} application_name=${application_name} ${OCF_RESKEY_primary_conninfo_opt}'
 restore_command = '${OCF_RESKEY_restore_command}'
 recovery_target_timeline = 'latest'
 END
@@ -1763,7 +1802,8 @@ check_config() {
 
 # Validate most critical parameters
 pgsql_validate_all() {
-    local version
+    version
+
     local check_config_rc
     local rep_mode_string
     local socket_directories
