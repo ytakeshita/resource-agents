@@ -175,7 +175,7 @@ process_status() {
     pid=$1
 
     # check if parent process is running
-    ocf_run -q kill -s 0 $pid 2> /dev/null 1>&2
+    kill -s 0 $pid > /dev/null 2>&1
 }
 
 #
