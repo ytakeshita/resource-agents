@@ -225,6 +225,7 @@ zabbixserver_start() {
 #
 zabbixserver_stop() {
     local pid
+    local children_pid
     local rc
 
     # check the resource status
@@ -236,6 +237,18 @@ zabbixserver_stop() {
     $OCF_NOT_RUNNING)
         ocf_log info "Resource is already stopped"
         return $OCF_SUCCESS
+        ;;
+    $OCF_ERR_GENERIC)
+        ocf_log info "zabbix_server already stopped but children are still running. try to terminate children"
+        children_pid=$(check_children $(getpid $OCF_RESKEY_pid))
+        kill $children_pid > /dev/null 2>&1
+        if [ $? -eq 0 ]; then
+            ocf_log info "succeed to terminate children"
+            return $OCF_SUCCESS
+        else
+            ocf_log err "failed to terminate children"
+            exit $OCF_ERR_GENERIC
+        fi
         ;;
     *)
         exit $OCF_ERR_GENERIC
@@ -270,6 +283,20 @@ zabbixserver_stop() {
         sleep $sleepint
     done
 
+    # Check if children processes stop really.
+    # NOTE: If the parent process is stopped abnormally,
+    # children are continue to running.
+    children_pid=$(check_children $pid)
+    if [ -n "$children_pid" ]; then
+        kill $children_pid > /dev/null 2>&1
+        if [ $? -ne 0 ]; then
+            ocf_log err "failed to terminate children processes"
+            return $OCF_ERR_GENERIC
+        fi
+    else
+        ocf_log debug "children processe are not running"
+    fi
+
     # remove stale pidfile if it exists
     if [ -f $OCF_RESKEY_pid ]; then
         ocf_log debug "Pidfile still exists, removing"
@@ -278,7 +305,6 @@ zabbixserver_stop() {
 
     return $OCF_SUCCESS
 }
-
 #
 # resource monitor
 #
@@ -291,11 +317,29 @@ zabbixserver_monitor() {
         if [ $? -eq 0 ]; then
             ocf_log debug "Resource is running"
             return $OCF_SUCCESS
+        else
+            # Parent's pid is lost
+            children_pid=$(check_children dummy_string)
+            if [ -n "$children_pid" ]; then
+                ocf_log err "zabbix_server is not running, but children are still running"
+                return $OCF_ERR_GENERIC
+            fi
         fi
     fi
 
     ocf_log info "Resource is not running"
     return $OCF_NOT_RUNNING
+}
+
+check_children() {
+    local rc
+    local parent_pid
+    local children_pid
+
+    parent_pid=$1
+    children_pid=`pgrep -f $OCF_RESKEY_binary | grep -v $parent_pid | tr '\n' ' '`
+
+    echo "$children_pid"
 }
 
 #
