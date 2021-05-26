@@ -19,6 +19,8 @@
 #		OCF_RESKEY_run_fsck
 #		OCF_RESKEY_fast_stop
 #		OCF_RESKEY_force_clones
+#		OCF_RESKEY_retry_count
+#		OCF_RESKEY_wait_time
 #
 #OCF_RESKEY_device    : name of block device for the filesystem. e.g. /dev/sda1, /dev/md0
 #                       Or a -U or -L option for mount, or an NFS mount specification
@@ -30,6 +32,8 @@
 #OCF_RESKEY_fast_stop : fast stop: yes(default)/no
 #OCF_RESKEY_force_clones : allow running the resource as clone. e.g. local xfs mounts
 #                         for each brick in a glusterfs setup
+#OCF_RESKEY_retry_count : retry count if mount entry is empty
+#OCF_RESKEY_wait_time : wait time for the retry
 #
 #
 # This assumes you want to manage a filesystem on a shared (SCSI) bus,
@@ -71,6 +75,8 @@ OCF_RESKEY_run_fsck_default="auto"
 OCF_RESKEY_fast_stop_default="no"
 OCF_RESKEY_force_clones_default="false"
 OCF_RESKEY_force_unmount_default="true"
+OCF_RESKEY_retry_count_default="0"
+OCF_RESKEY_wait_time_default="0"
 
 # RHEL specific defaults
 if is_redhat_based; then
@@ -104,6 +110,8 @@ if [ -z "${OCF_RESKEY_fast_stop}" ]; then
 fi
 : ${OCF_RESKEY_force_clones=${OCF_RESKEY_force_clones_default}}
 : ${OCF_RESKEY_force_unmount=${OCF_RESKEY_force_unmount_default}}
+: ${OCF_RESKEY_retry_count=${OCF_RESKEY_retry_count_default}}
+: ${OCF_RESKEY_wait_time=${OCF_RESKEY_wait_time_default}}
 
 # Variables used by multiple methods
 HOSTOS=$(uname)
@@ -262,6 +270,25 @@ block if unresponsive nfs mounts are in use on the system.
 </longdesc>
 <shortdesc lang="en">Kill processes before unmount</shortdesc>
 <content type="boolean" default="${OCF_RESKEY_force_unmount_default}" />
+</parameter>
+
+<parameter name="retry_count">
+<longdesc lang="en">
+If mount/umount occurs while reading /proc/mounts or /etc/mtab,
+the entries may be misaligned with unexpected results.
+
+If you avoid such the temporary issue, set this opiton.
+</longdesc>
+<shortdesc lang="en">retry counts for reading /proc/mounts or /etc/mtab</shortdesc>
+<content type="integer" default="${OCF_RESKEY_retry_count_default}" />
+</parameter>
+
+<parameter name="wait_time">
+<longdesc lang="en">
+Wait time for retry.
+</longdesc>
+<shortdesc lang="en">wait time for retry</shortdesc>
+<content type="integer" default="${OCF_RESKEY_wait_time_default}" />
 </parameter>
 
 </parameters>
@@ -709,13 +736,20 @@ Filesystem_stop()
 Filesystem_status()
 {
 	match_string="${TAB}${CANONICALIZED_MOUNTPOINT}${TAB}"
-	if list_mounts | grep "$match_string" >/dev/null 2>&1; then
-		rc=$OCF_SUCCESS
-		msg="$MOUNTPOINT is mounted (running)"
-	else
-		rc=$OCF_NOT_RUNNING
-		msg="$MOUNTPOINT is unmounted (stopped)"
-	fi
+	for i in `eval echo {0..$OCF_RESKEY_retry_count}`; do
+		if list_mounts | grep "$match_string" >/dev/null 2>&1; then
+			rc=$OCF_SUCCESS
+			msg="$MOUNTPOINT is mounted (running)"
+			break
+		else
+			rc=$OCF_NOT_RUNNING
+			msg="$MOUNTPOINT is unmounted (stopped)"
+
+			if [ $OCF_RESKEY_retry_count -gt 0 ]; then
+				sleep $OCF_RESKEY_wait_time
+			fi
+		fi
+	done
 
 	# Special case "monitor" to check whether the UUID cached and
 	# on-disk still match?
